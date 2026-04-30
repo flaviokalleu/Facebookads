@@ -1,0 +1,371 @@
+package handler
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/gofiber/fiber/v2"
+
+	"github.com/facebookads/backend/internal/ai"
+	"github.com/facebookads/backend/internal/domain"
+	"github.com/facebookads/backend/internal/metaads"
+	"github.com/facebookads/backend/internal/middleware"
+	"github.com/facebookads/backend/internal/usecase"
+	"github.com/facebookads/backend/internal/repository"
+)
+
+type CampaignHandler struct {
+	uc       *usecase.CampaignUseCase
+	recRepo  repository.RecommendationRepository
+	bugRepo  repository.BudgetSuggestionRepository
+	metaClient metaads.Client
+	tokenRepo repository.UserTokenRepository
+	aiRouter *ai.Router
+}
+
+func NewCampaignHandler(uc *usecase.CampaignUseCase, aiRouter *ai.Router, metaClient metaads.Client, tokenRepo repository.UserTokenRepository) *CampaignHandler {
+	return &CampaignHandler{uc: uc, aiRouter: aiRouter, metaClient: metaClient, tokenRepo: tokenRepo}
+}
+
+func (h *CampaignHandler) List(c *fiber.Ctx) error {
+	campaigns, err := h.uc.List(c.UserContext(), middleware.UserID(c))
+	if err != nil {
+		return mapError(err)
+	}
+	if campaigns == nil {
+		campaigns = []*usecase.CampaignWithMetrics{}
+	}
+	return c.JSON(fiber.Map{"data": campaigns, "meta": fiber.Map{"total": len(campaigns)}})
+}
+
+func (h *CampaignHandler) Get(c *fiber.Ctx) error {
+	campaign, err := h.uc.Get(c.UserContext(), middleware.UserID(c), c.Params("id"))
+	if err != nil {
+		return mapError(err)
+	}
+	return c.JSON(fiber.Map{"data": campaign})
+}
+
+func (h *CampaignHandler) Create(c *fiber.Ctx) error {
+	var in usecase.CreateCampaignInput
+	if err := c.BodyParser(&in); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if in.Name == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "name is required")
+	}
+	if in.AdAccountID == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "ad_account_id is required")
+	}
+	campaign, err := h.uc.Create(c.UserContext(), middleware.UserID(c), in)
+	if err != nil {
+		return mapError(err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"data": campaign})
+}
+
+func (h *CampaignHandler) Update(c *fiber.Ctx) error {
+	var in usecase.UpdateCampaignInput
+	if err := c.BodyParser(&in); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	campaign, err := h.uc.Update(c.UserContext(), middleware.UserID(c), c.Params("id"), in)
+	if err != nil {
+		return mapError(err)
+	}
+	return c.JSON(fiber.Map{"data": campaign})
+}
+
+func (h *CampaignHandler) Delete(c *fiber.Ctx) error {
+	if err := h.uc.Delete(c.UserContext(), middleware.UserID(c), c.Params("id")); err != nil {
+		return mapError(err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (h *CampaignHandler) Sync(c *fiber.Ctx) error {
+	synced, err := h.uc.Sync(c.UserContext(), middleware.UserID(c))
+	if err != nil {
+		return mapError(err)
+	}
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+		"data": fiber.Map{"synced_campaigns": synced},
+	})
+}
+
+func (h *CampaignHandler) GetRecommendations(c *fiber.Ctx) error {
+	if h.recRepo == nil {
+		return c.JSON(fiber.Map{"data": []any{}})
+	}
+	recs, err := h.recRepo.ListByCampaign(c.UserContext(), c.Params("id"))
+	if err != nil {
+		return mapError(err)
+	}
+	if recs == nil {
+		recs = []*domain.Recommendation{}
+	}
+	return c.JSON(fiber.Map{"data": recs, "meta": fiber.Map{"total": len(recs)}})
+}
+
+func (h *CampaignHandler) ApplyRecommendation(c *fiber.Ctx) error {
+	if h.recRepo == nil {
+		return fiber.NewError(fiber.StatusNotFound, "not_found")
+	}
+	if err := h.recRepo.MarkApplied(c.UserContext(), c.Params("id")); err != nil {
+		return mapError(err)
+	}
+	return c.JSON(fiber.Map{"data": fiber.Map{"applied": true}})
+}
+
+func (h *CampaignHandler) ApplyBudgetSuggestion(c *fiber.Ctx) error {
+	if h.bugRepo == nil {
+		return fiber.NewError(fiber.StatusNotFound, "not_found")
+	}
+	if err := h.bugRepo.MarkApplied(c.UserContext(), c.Params("id")); err != nil {
+		return mapError(err)
+	}
+	return c.JSON(fiber.Map{"data": fiber.Map{"applied": true}})
+}
+
+func (h *CampaignHandler) Optimize(c *fiber.Ctx) error {
+	var body struct {
+		Instructions string `json:"instructions"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid body")
+	}
+
+	campaignID := c.Params("id")
+	campaign, err := h.uc.Get(c.UserContext(), middleware.UserID(c), campaignID)
+	if err != nil {
+		return mapError(err)
+	}
+
+	// Fetch ad sets and ads for this campaign
+	var adSets []*domain.AdSet
+	var adsList []*domain.Ad
+	adSetsResult, err := h.uc.AdSets(c.UserContext(), campaignID)
+	if err == nil {
+		adSets = adSetsResult
+		for _, as := range adSets {
+			adSetAds, _ := h.uc.Ads(c.UserContext(), as.ID)
+			adsList = append(adsList, adSetAds...)
+		}
+	}
+
+	adsJSON, _ := json.Marshal(adsList)
+	adSetsJSON, _ := json.Marshal(adSets)
+
+	prompt := fmt.Sprintf(`You are a Meta Ads campaign optimization expert.
+
+Campaign: %s
+Objective: %s
+Status: %s
+Daily Budget: $%.2f
+Lifetime Budget: $%.2f
+Health: %s
+
+Ad Sets: %s
+Ads: %s
+
+User instructions: %s
+
+Analyze this campaign and provide optimization recommendations as JSON:
+{
+  "budget": {"action": "increase|decrease|maintain", "amount": 0, "reasoning": "..."},
+  "targeting": {"suggestions": ["suggestion 1", "suggestion 2"], "reasoning": "..."},
+  "creative": {"suggestions": ["suggestion 1"], "reasoning": "..."},
+  "bidding": {"suggestion": "...", "reasoning": "..."},
+  "scheduling": {"suggestion": "...", "reasoning": "..."},
+  "summary": "one paragraph overall recommendation"
+}`,
+		campaign.Name, campaign.Objective, campaign.Status,
+		toPtr(campaign.DailyBudget, 0), toPtr(campaign.LifetimeBudget, 0),
+		campaign.HealthStatus,
+		string(adSetsJSON), string(adsJSON), body.Instructions)
+
+	resp, err := h.aiRouter.Complete(c.UserContext(), ai.TaskOptimization, ai.CompletionRequest{
+		SystemPrompt: "You are a Meta Ads optimization expert. Respond only with valid JSON.",
+		UserPrompt:   prompt,
+		MaxTokens:    2000,
+		Temperature:  0.4,
+		JSONMode:     true,
+	})
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ai optimization failed: "+err.Error())
+	}
+
+	cleaned := cleanJSON(resp.Content)
+	var suggestions map[string]any
+	if err := json.Unmarshal([]byte(cleaned), &suggestions); err != nil {
+		// Try to fix common issues: remove newlines from within strings
+		cleaned = strings.ReplaceAll(cleaned, "\n", "\\n")
+		cleaned = strings.ReplaceAll(cleaned, "\\\n", "")
+		if err2 := json.Unmarshal([]byte(cleaned), &suggestions); err2 != nil {
+			// Return as raw text if still fails
+			return c.JSON(fiber.Map{"data": fiber.Map{
+				"suggestions": cleaned,
+				"model_used":  resp.Provider + "/" + resp.ModelUsed,
+			}})
+		}
+	}
+
+	return c.JSON(fiber.Map{"data": fiber.Map{
+		"suggestions": suggestions,
+		"model_used":  resp.Provider + "/" + resp.ModelUsed,
+	}})
+}
+
+func (h *CampaignHandler) AutoOptimize(c *fiber.Ctx) error {
+	var body struct {
+		Niche     string `json:"niche"`
+		MinAge    int    `json:"min_age"`
+		MaxAge    int    `json:"max_age"`
+		Gender    string `json:"gender,omitempty"`
+		Interests string `json:"interests,omitempty"`
+		Location  string `json:"location,omitempty"`
+		Language  string `json:"language,omitempty"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid body")
+	}
+	if body.Niche == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "niche is required (e.g. imobiliaria,教育事业)")
+	}
+
+	userID := middleware.UserID(c)
+	campaignID := c.Params("id")
+
+	// Get campaign
+	campaign, err := h.uc.Get(c.UserContext(), userID, campaignID)
+	if err != nil {
+		return mapError(err)
+	}
+
+	// Get user Meta token
+	tokens, err := h.tokenRepo.ListByUser(c.UserContext(), userID)
+	if err != nil || len(tokens) == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "no Meta account connected")
+	}
+	token := tokens[0].EncryptedToken
+
+	// Check if this is a manual (local-only) campaign
+	isManual := strings.HasPrefix(campaign.MetaCampaignID, "manual_")
+
+	var metaAdSets []metaads.MetaAdSet
+	if !isManual {
+		metaAdSets, err = h.metaClient.GetAdSets(c.UserContext(), token, campaign.MetaCampaignID)
+		if err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "fetch ad sets: "+err.Error())
+		}
+	}
+
+	// Build AI prompt for targeting
+	ageRange := fmt.Sprintf("%d-%d", body.MinAge, body.MaxAge)
+	if body.MinAge == 0 { ageRange = "18-65+" }
+
+	prompt := fmt.Sprintf(`You are a Meta Ads targeting expert. Generate optimal targeting configuration for this campaign.
+
+Campaign: %s
+Niche: %s
+Target Age: %s
+Gender: %s
+Location: %s
+Language: %s
+Interests/Keywords: %s
+
+Respond ONLY with a valid JSON targeting spec for the Meta Ads API:
+
+Use Portuguese names for interests and real estate industry standards.
+Return ONLY the JSON, no explanation.
+`, campaign.Name, body.Niche, ageRange, body.Gender, body.Location, body.Language, body.Interests)
+
+	resp, err := h.aiRouter.Complete(c.UserContext(), ai.TaskOptimization, ai.CompletionRequest{
+		SystemPrompt: "You are a Meta Ads targeting specialist. Generate JSON targeting specs only.",
+		UserPrompt:   prompt,
+		MaxTokens:    2000,
+		Temperature:  0.3,
+		JSONMode:     true,
+	})
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ai failed: "+err.Error())
+	}
+
+	// Parse the AI-generated targeting
+	cleaned := cleanJSON(resp.Content)
+	var targeting map[string]any
+	if err := json.Unmarshal([]byte(cleaned), &targeting); err != nil {
+		return c.JSON(fiber.Map{"data": fiber.Map{
+			"status":  "ai_response",
+			"targeting_raw": cleaned,
+			"model_used": resp.Provider + "/" + resp.ModelUsed,
+		}})
+	}
+
+	// Only keep safe targeting fields (age, gender, geo)
+	safeTargeting := map[string]any{}
+	for _, key := range []string{"age_min","age_max","genders","geo_locations","flexible_spec"}{
+		if v, ok := targeting[key]; ok {
+			safeTargeting[key] = v
+		}
+	}
+	if fs, ok := safeTargeting["flexible_spec"].([]any); ok {
+		var cleanSpec []any
+		for _, spec := range fs {
+			if m, ok := spec.(map[string]any); ok {
+				if interests, has := m["interests"]; has && interests != nil {
+					cleanSpec = append(cleanSpec, m)
+				}
+			}
+		}
+		if len(cleanSpec) == 0 {
+			delete(safeTargeting, "flexible_spec")
+		} else {
+			safeTargeting["flexible_spec"] = cleanSpec
+		}
+	}
+	
+	// Apply or return targeting
+	var results []fiber.Map
+	if isManual {
+		results = append(results, fiber.Map{
+			"ad_set_id": "local",
+			"name": campaign.Name,
+			"status": "targeting_gerado",
+			"message": "Campanha local. Crie no Meta Ads para aplicar.",
+		})
+	} else {
+		for _, as := range metaAdSets {
+			if err := h.metaClient.UpdateAdSetTargeting(c.UserContext(), token, as.ID, safeTargeting); err != nil {
+				results = append(results, fiber.Map{"ad_set_id": as.ID, "name": as.Name, "status": "error", "error": err.Error()})
+				continue
+			}
+			results = append(results, fiber.Map{"ad_set_id": as.ID, "name": as.Name, "status": "applied"})
+		}
+	}
+	
+	return c.JSON(fiber.Map{"data": fiber.Map{
+		"targeting": targeting,
+		"results":   results,
+		"model_used": resp.Provider + "/" + resp.ModelUsed,
+	}})
+}
+
+func toPtr(v *float64, def float64) float64 {
+	if v != nil { return *v }
+	return def
+}
+
+
+func cleanJSON(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	return strings.TrimSpace(raw)
+}
+
+func (h *CampaignHandler) CreativeInsights(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{"data": []any{}})
+}

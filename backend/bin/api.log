@@ -1,0 +1,20 @@
+{"time":"2026-04-30T12:58:31.5872742-03:00","level":"INFO","msg":"database connected"}
+{"time":"2026-04-30T12:58:31.5988212-03:00","level":"INFO","msg":"config service loaded"}
+{"time":"2026-04-30T12:58:31.5998929-03:00","level":"INFO","msg":"ai router ready","providers":2}
+{"time":"2026-04-30T12:58:31.5998929-03:00","level":"INFO","msg":"scheduler: starting background jobs"}
+{"time":"2026-04-30T12:58:31.5998929-03:00","level":"INFO","msg":"scheduler: all jobs started"}
+{"time":"2026-04-30T12:58:31.5998929-03:00","level":"INFO","msg":"server starting","port":"8080"}
+panic: runtime error: invalid memory address or nil pointer dereference
+[signal 0xc0000005 code=0x0 addr=0x20 pc=0x7ff6ae868094]
+
+goroutine 40 [running]:
+github.com/facebookads/backend/internal/ai.CheckAvailable({0x7ff6aeac56e0?, 0x7ff6af08ae80?}, {0x0, 0x0})
+	C:/Users/Flavio/Documents/Facebookads/backend/internal/ai/provider.go:86 +0x54
+github.com/facebookads/backend/internal/orchestrator.(*Scheduler).providerHealthCheck(0x302245eac928?, {0x7ff6aeac56e0, 0x7ff6af08ae80})
+	C:/Users/Flavio/Documents/Facebookads/backend/internal/orchestrator/scheduler.go:275 +0x23f
+github.com/facebookads/backend/internal/orchestrator.(*Scheduler).runJob(0x302245eac910, {0x7ff6aeac56e0, 0x7ff6af08ae80}, {0x7ff6aea8c219, 0x15}, 0x302245e10070)
+	C:/Users/Flavio/Documents/Facebookads/backend/internal/orchestrator/scheduler.go:111 +0x217
+github.com/facebookads/backend/internal/orchestrator.(*Scheduler).runLoop(0x302245eac910, {0x7ff6aeac56e0, 0x7ff6af08ae80}, {0x7ff6aea8c219, 0x15}, 0xd18c2e2800, 0x302245e10070)
+	C:/Users/Flavio/Documents/Facebookads/backend/internal/orchestrator/scheduler.go:81 +0x69
+created by github.com/facebookads/backend/internal/orchestrator.(*Scheduler).Start in goroutine 18
+	C:/Users/Flavio/Documents/Facebookads/backend/internal/orchestrator/scheduler.go:64 +0x4f1
