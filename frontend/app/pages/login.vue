@@ -1,120 +1,135 @@
 <script setup lang="ts">
-definePageMeta({ layout: 'auth' })
+import { useForm } from 'vee-validate'
+import { toTypedSchema } from '@vee-validate/zod'
+import { z } from 'zod'
+import UiButton from '~/components/ui/UiButton.vue'
+import UiInput from '~/components/ui/UiInput.vue'
+import UiCard from '~/components/ui/UiCard.vue'
+import UiBadge from '~/components/ui/UiBadge.vue'
 
-import { useAuthStore } from '~/stores/useAuthStore'
-import { LogIn, UserPlus, Eye, EyeOff } from 'lucide-vue-next'
+definePageMeta({ layout: 'blank' })
 
-const auth = useAuthStore()
-const router = useRouter()
-
+const { login, register } = useAuth()
+const apiError = ref<string | null>(null)
+const submitting = ref(false)
 const mode = ref<'login' | 'register'>('login')
-const name = ref('')
-const email = ref('')
-const password = ref('')
-const error = ref('')
-const loading = ref(false)
-const showPassword = ref(false)
 
-async function submit() {
-  error.value = ''
-  loading.value = true
-  try {
-    if (mode.value === 'login') {
-      await auth.login(email.value, password.value)
-    } else {
-      await auth.register(name.value, email.value, password.value)
-    }
-    router.push('/dashboard')
-  } catch (e: any) {
-    error.value = e.message ?? 'An error occurred'
-  } finally {
-    loading.value = false
-  }
+const schema = computed(() =>
+  toTypedSchema(
+    mode.value === 'login'
+      ? z.object({
+          email: z.string().email('E-mail inválido'),
+          password: z.string().min(6, 'Mínimo 6 caracteres'),
+          name: z.string().optional(),
+        })
+      : z.object({
+          email: z.string().email('E-mail inválido'),
+          password: z.string().min(8, 'Mínimo 8 caracteres'),
+          name: z.string().min(2, 'Informe seu nome'),
+        }),
+  ),
+)
+
+const { defineField, handleSubmit, errors, resetForm } = useForm({
+  validationSchema: schema,
+  initialValues: { email: '', password: '', name: '' },
+})
+
+const [email, emailAttrs] = defineField('email')
+const [password, passwordAttrs] = defineField('password')
+const [name, nameAttrs] = defineField('name')
+
+function switchMode() {
+  mode.value = mode.value === 'login' ? 'register' : 'login'
+  apiError.value = null
+  resetForm()
 }
+
+function extractError(e: any): string {
+  const errObj = e?.data?.error
+  return (
+    (typeof errObj === 'string' ? errObj : null) ||
+    errObj?.message ||
+    errObj?.code ||
+    e?.data?.message ||
+    e?.message ||
+    'Não foi possível autenticar.'
+  )
+}
+
+const onSubmit = handleSubmit(async (values) => {
+  apiError.value = null
+  submitting.value = true
+  try {
+    if (mode.value === 'register') {
+      await register({ email: values.email, password: values.password, name: values.name || values.email })
+    } else {
+      await login({ email: values.email, password: values.password })
+    }
+    navigateTo('/onboarding')
+  } catch (e: any) {
+    apiError.value = extractError(e)
+  } finally {
+    submitting.value = false
+  }
+})
 </script>
 
 <template>
-  <div class="w-full max-w-sm">
-    <div class="text-center mb-8">
-      <div class="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-br from-blue-default to-blue-glow mb-3 shadow-lg shadow-blue-default/30">
-        <span class="text-white font-bold text-lg">M</span>
-      </div>
-      <h1 class="text-primary font-bold text-xl tracking-wide">Meta Ads AI</h1>
-      <p class="text-muted text-sm mt-1">AI-powered campaign orchestration</p>
-    </div>
+  <div class="min-h-screen bg-bg-subtle flex items-center justify-center px-6 py-12">
+    <div class="w-full max-w-md">
+      <h1 class="text-3xl font-semibold tracking-tight text-ink text-center">
+        {{ mode === 'login' ? 'Entrar no sistema' : 'Criar sua conta' }}
+      </h1>
+      <p class="mt-2 text-center text-ink-muted">
+        {{ mode === 'login' ? 'Acesse seu painel de tráfego.' : 'É rápido — só e-mail, senha e nome.' }}
+      </p>
 
-    <div class="card border-bg-border/50 shadow-xl shadow-black/20">
-      <div class="flex gap-1 bg-bg-elevated/50 rounded-xl p-1 mb-6">
-        <button
-          v-for="tab in ['login', 'register']"
-          :key="tab"
-          class="flex-1 flex items-center justify-center gap-1.5 py-2 text-sm font-medium rounded-lg transition-all capitalize"
-          :class="mode === tab
-            ? 'bg-bg-surface text-primary shadow-sm'
-            : 'text-muted hover:text-secondary'"
-          @click="mode = tab as 'login' | 'register'"
-        >
-          <component :is="tab === 'login' ? LogIn : UserPlus" class="w-3.5 h-3.5" />
-          {{ tab }}
-        </button>
-      </div>
-
-      <form @submit.prevent="submit" class="space-y-4">
-        <div v-if="mode === 'register'">
-          <label class="text-secondary text-xs font-medium block mb-1.5">Name</label>
-          <input
+      <UiCard class="mt-8">
+        <form class="space-y-5" @submit.prevent="onSubmit">
+          <UiInput
+            v-if="mode === 'register'"
             v-model="name"
-            type="text"
-            placeholder="Your name"
-            required
-            class="w-full bg-bg-elevated/50 border border-bg-border rounded-xl px-3 py-2.5 text-primary text-sm placeholder-muted/50 focus:outline-none focus:border-blue-default focus:ring-1 focus:ring-blue-default/30 transition-all"
+            v-bind="nameAttrs"
+            label="Nome"
+            placeholder="Seu nome"
+            autocomplete="name"
+            :error="errors.name"
           />
-        </div>
-
-        <div>
-          <label class="text-secondary text-xs font-medium block mb-1.5">Email</label>
-          <input
+          <UiInput
             v-model="email"
+            v-bind="emailAttrs"
+            label="E-mail"
             type="email"
-            placeholder="you@example.com"
-            required
-            class="w-full bg-bg-elevated/50 border border-bg-border rounded-xl px-3 py-2.5 text-primary text-sm placeholder-muted/50 focus:outline-none focus:border-blue-default focus:ring-1 focus:ring-blue-default/30 transition-all"
+            placeholder="voce@exemplo.com"
+            autocomplete="email"
+            :error="errors.email"
           />
-        </div>
+          <UiInput
+            v-model="password"
+            v-bind="passwordAttrs"
+            label="Senha"
+            type="password"
+            placeholder="••••••••"
+            :autocomplete="mode === 'login' ? 'current-password' : 'new-password'"
+            :error="errors.password"
+          />
 
-        <div>
-          <label class="text-secondary text-xs font-medium block mb-1.5">Password</label>
-          <div class="relative">
-            <input
-              v-model="password"
-              :type="showPassword ? 'text' : 'password'"
-              placeholder="••••••••"
-              required
-              minlength="8"
-              class="w-full bg-bg-elevated/50 border border-bg-border rounded-xl px-3 py-2.5 pr-10 text-primary text-sm placeholder-muted/50 focus:outline-none focus:border-blue-default focus:ring-1 focus:ring-blue-default/30 transition-all"
-            />
-            <button type="button" @click="showPassword = !showPassword" class="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-secondary">
-              <component :is="showPassword ? EyeOff : Eye" class="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+          <UiBadge v-if="apiError" variant="danger">{{ apiError }}</UiBadge>
 
-        <div v-if="error" class="text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
-          {{ error }}
-        </div>
+          <UiButton type="submit" variant="primary" class="w-full" :loading="submitting">
+            {{ mode === 'login' ? 'Entrar' : 'Criar conta' }}
+          </UiButton>
+        </form>
+      </UiCard>
 
-        <button
-          type="submit"
-          :disabled="loading"
-          class="w-full bg-gradient-to-r from-blue-default to-blue-bright hover:from-blue-bright hover:to-blue-glow text-white font-semibold py-2.5 rounded-xl transition-all text-sm disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-blue-default/20 hover:shadow-blue-default/40"
-        >
-          <span v-if="loading" class="flex items-center justify-center gap-2">
-            <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-            Loading…
-          </span>
-          <span v-else>{{ mode === 'login' ? 'Sign In' : 'Create Account' }}</span>
-        </button>
-      </form>
+      <button
+        type="button"
+        class="mt-6 block w-full text-center text-sm text-ink-muted hover:text-ink"
+        @click="switchMode"
+      >
+        {{ mode === 'login' ? 'Ainda não tem conta? Cadastre-se.' : 'Já tem conta? Entrar.' }}
+      </button>
     </div>
   </div>
 </template>

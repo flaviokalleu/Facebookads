@@ -1,45 +1,39 @@
 <script setup lang="ts">
-import { useAuthStore } from '~/stores/useAuthStore'
-import { Menu, RefreshCw } from 'lucide-vue-next'
+import { Search } from 'lucide-vue-next'
 
-const props = defineProps<{
-  title: string
-  subtitle?: string
-}>()
+const route = useRoute()
 
-const emit = defineEmits<{
-  'toggle-sidebar': []
-}>()
+const labels: Record<string, string> = {
+  dashboard: 'Painel',
+  imoveis: 'Imóveis',
+  campanhas: 'Anúncios',
+  publicos: 'Públicos',
+  ia: 'IA',
+  chat: 'Conversa',
+  regras: 'Regras',
+  historico: 'Histórico',
+  ajustes: 'Ajustes',
+  token: 'Acesso Meta',
+  nova: 'Novo',
+}
 
-const auth = useAuthStore()
+const crumbs = computed(() =>
+  route.path.split('/').filter(Boolean).map(seg => labels[seg] || seg),
+)
 </script>
 
 <template>
-  <header class="flex items-center justify-between py-4 px-4 md:px-6 bg-bg-base/80 backdrop-blur sticky top-0 z-40 border-b border-bg-border/50">
-    <div class="flex items-center gap-3">
-      <button
-        class="lg:hidden p-2 rounded-lg hover:bg-bg-elevated text-secondary hover:text-primary transition-colors"
-        @click="emit('toggle-sidebar')"
-      >
-        <Menu class="w-5 h-5" />
-      </button>
-      <div>
-        <h1 class="text-primary text-lg font-bold">{{ title }}</h1>
-        <p v-if="subtitle" class="text-muted text-xs">{{ subtitle }}</p>
-      </div>
-    </div>
-
-    <div class="flex items-center gap-3">
-      <button
-        class="flex items-center gap-1.5 text-xs font-medium text-blue-bright hover:text-blue-glow px-3 py-1.5 rounded-xl bg-blue-default/10 hover:bg-blue-default/20 border border-blue-default/20 transition-all"
-      >
-        <RefreshCw class="w-3.5 h-3.5" />
-        Sync
-      </button>
-      <div v-if="auth.user" class="flex items-center gap-2">
-        <span class="w-7 h-7 rounded-full bg-gradient-to-br from-blue-default to-blue-glow flex items-center justify-center text-xs font-bold text-white shadow-sm">
-          {{ auth.user.name.charAt(0).toUpperCase() }}
-        </span>
+  <header class="sticky top-0 z-10 flex h-16 items-center gap-4 border-b border-border bg-bg px-8">
+    <nav class="flex items-center gap-2 text-sm text-ink-muted">
+      <template v-for="(c, i) in crumbs" :key="i">
+        <span v-if="i > 0" class="text-ink-faint">/</span>
+        <span :class="i === crumbs.length - 1 ? 'text-ink' : ''">{{ c }}</span>
+      </template>
+    </nav>
+    <div class="ml-auto flex items-center gap-2">
+      <div class="flex h-9 w-72 items-center gap-2 rounded-lg border border-border bg-bg-muted px-3 text-sm text-ink-faint">
+        <Search class="h-4 w-4" />
+        <span>Buscar (em breve)</span>
       </div>
     </div>
   </header>

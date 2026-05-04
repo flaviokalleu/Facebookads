@@ -1,40 +1,22 @@
-// Wraps API calls with loading, error, and data state.
-// Use in components/stores for consistent async handling.
+import { useAuthStore } from '~/stores/auth'
 
-export function useApi<T>(
-  fn: () => Promise<T>,
-  options: { immediate?: boolean } = {},
-) {
-  const data = ref<T | null>(null) as Ref<T | null>
-  const error = ref<string | null>(null)
-  const loading = ref(false)
-  const called = ref(false)
+export function useApi() {
+  const config = useRuntimeConfig()
+  const auth = useAuthStore()
 
-  async function execute(overrides?: { signal?: AbortSignal }): Promise<T | undefined> {
-    loading.value = true
-    error.value = null
-    called.value = true
-    try {
-      const result = await fn()
-      data.value = result
-      return result
-    } catch (e: unknown) {
-      if (e instanceof DOMException && e.name === 'AbortError') return
-      error.value = e instanceof Error ? e.message : 'Unknown error'
-      return undefined
-    } finally {
-      loading.value = false
+  const request = <T>(path: string, opts: any = {}): Promise<T> => {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
     }
+    if (auth.token) headers.Authorization = `Bearer ${auth.token}`
+    return $fetch<T>(`${config.public.apiBase}${path}`, { ...opts, headers })
   }
 
-  if (options.immediate) execute()
-
-  function reset() {
-    data.value = null
-    error.value = null
-    loading.value = false
-    called.value = false
+  return {
+    get:    <T>(path: string, opts: any = {}) => request<T>(path, { ...opts, method: 'GET' }),
+    post:   <T>(path: string, body?: any, opts: any = {}) => request<T>(path, { ...opts, method: 'POST', body }),
+    put:    <T>(path: string, body?: any, opts: any = {}) => request<T>(path, { ...opts, method: 'PUT', body }),
+    del:    <T>(path: string, opts: any = {}) => request<T>(path, { ...opts, method: 'DELETE' }),
   }
-
-  return { data, error, loading, called, execute, reset }
 }

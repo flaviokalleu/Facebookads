@@ -23,11 +23,26 @@ type Client interface {
 	GetAds(ctx context.Context, accessToken, adSetID string) ([]MetaAd, error)
 	GetInsights(ctx context.Context, accessToken, campaignID string, datePreset string) ([]MetaInsight, error)
 	UpdateAdSet(ctx context.Context, accessToken, adSetID string, updates map[string]any) error
+	UpdateAd(ctx context.Context, accessToken, adID string, updates map[string]any) error
 	UpdateCampaign(ctx context.Context, accessToken, campaignID string, updates map[string]any) error
 	UpdateAdSetTargeting(ctx context.Context, accessToken, adSetID string, targeting map[string]any) error
 	CreateCampaign(ctx context.Context, accessToken, adAccountID string, params map[string]any) (string, error)
 	CreateAdSet(ctx context.Context, accessToken, adAccountID string, params map[string]any) (string, error)
 	CreateAd(ctx context.Context, accessToken, adAccountID string, params map[string]any) (string, error)
+
+	// Token lifecycle (token.go)
+	ExchangeForLongLived(ctx context.Context, appID, appSecret, shortToken string) (string, int, error)
+	DebugToken(ctx context.Context, inputToken, appID, appSecret string) (*TokenInfo, error)
+	AppSecretProof(accessToken, appSecret string) string
+
+	// BM hierarchy (businesses.go)
+	GetBusinesses(ctx context.Context, accessToken, appSecret string) ([]Business, error)
+	GetMyAdAccounts(ctx context.Context, accessToken, appSecret string) ([]AdAccountFull, error)
+	GetBMOwnedAccounts(ctx context.Context, accessToken, appSecret, bmID string) ([]AdAccountFull, error)
+	GetBMClientAccounts(ctx context.Context, accessToken, appSecret, bmID string) ([]AdAccountFull, error)
+	GetBMPages(ctx context.Context, accessToken, appSecret, bmID string) ([]Page, error)
+	GetBMPixels(ctx context.Context, accessToken, appSecret, bmID string) ([]Pixel, error)
+	GetBMInstagram(ctx context.Context, accessToken, appSecret, bmID string) ([]InstagramAccount, error)
 }
 
 type httpClient struct {
@@ -306,6 +321,11 @@ func (c *httpClient) UpdateAdSetTargeting(ctx context.Context, accessToken, adSe
 func (c *httpClient) UpdateAdSet(ctx context.Context, accessToken, adSetID string, updates map[string]any) error {
 	updates["access_token"] = accessToken
 	return c.post(ctx, fmt.Sprintf("%s", adSetID), updates, nil)
+}
+
+func (c *httpClient) UpdateAd(ctx context.Context, accessToken, adID string, updates map[string]any) error {
+	updates["access_token"] = accessToken
+	return c.post(ctx, fmt.Sprintf("%s", adID), updates, nil)
 }
 
 func (c *httpClient) UpdateCampaign(ctx context.Context, accessToken, campaignID string, updates map[string]any) error {

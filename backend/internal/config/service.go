@@ -173,6 +173,17 @@ func (s *Service) refreshLoop() {
 	}
 }
 
+// Encrypt is a public wrapper over the internal AES-GCM encryption,
+// exposed so other packages can persist secrets using the same master key.
+func (s *Service) Encrypt(plain string) (string, error) {
+	return s.encrypt(plain)
+}
+
+// Decrypt is the public counterpart of Encrypt.
+func (s *Service) Decrypt(encoded string) (string, error) {
+	return s.decrypt(encoded)
+}
+
 // encrypt uses AES-256-GCM. Returns base64(nonce+ciphertext).
 func (s *Service) encrypt(plain string) (string, error) {
 	block, err := aes.NewCipher(s.encKey)

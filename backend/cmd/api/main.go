@@ -93,6 +93,15 @@ func main() {
 	adSetRepo       := postgres.NewAdSetRepo(db)
 	adRepo          := postgres.NewAdRepo(db)
 
+	// Phase F1 — Business Manager hierarchy + Imovel catalog
+	credsRepo       := postgres.NewAppCredentialRepo(db, cfg)
+	metaTokensRepo  := postgres.NewMetaTokenRepo(db, cfg)
+	bmRepo          := postgres.NewBusinessManagerRepo(db)
+	metaAccRepo     := postgres.NewMetaAdAccountRepo(db)
+	metaPageRepo    := postgres.NewMetaPageRepo(db, cfg)
+	metaPixelRepo   := postgres.NewMetaPixelRepo(db)
+	_               = postgres.NewImovelRepo(db) // wired in a follow-up handler
+
 	// ─── Meta Ads client ──────────────────────────────────────────────────────
 	metaClient := metaads.NewClient(cfg.Get("meta.api_version"))
 
@@ -122,6 +131,7 @@ func main() {
 	authUC      := usecase.NewAuthUseCase(userRepo, cfg)
 	campaignUC  := usecase.NewCampaignUseCase(campaignRepo, insightRepo, userTokenRepo, adSetRepo, adRepo, metaClient)
 	dashboardUC := usecase.NewDashboardUseCase(campaignRepo, insightRepo, anomalyRepo, budgetRepo, llmUsageRepo, recommendRepo)
+	syncMetaUC  := usecase.NewSyncMetaAccount(metaClient, bmRepo, metaAccRepo, metaPageRepo, metaPixelRepo, metaTokensRepo, credsRepo, cfg)
 
 	// ─── Orchestrator Scheduler ───────────────────────────────────────────────
 	sched := orchestrator.New(db, rdb, aiRouter)
@@ -158,6 +168,12 @@ func main() {
 		protected.Get("/auth/meta/accounts", metaAuthH.ListAdAccounts)
 	protected.Post("/auth/meta/refresh-token", handler.NewTokenHandler(userTokenRepo, cfg).Refresh)
 	protected.Post("/auth/meta/refresh-token", handler.NewTokenHandler(userTokenRepo, cfg).Refresh)
+
+	// Phase F1 — auto-discovery connect + BM hierarchy tree
+	metaConnectV2H := handler.NewMetaConnectV2Handler(syncMetaUC, credsRepo, metaTokensRepo, bmRepo, metaAccRepo, metaPageRepo, metaPixelRepo, metaClient, cfg)
+	protected.Post("/auth/meta/connect-v2", metaConnectV2H.Connect)
+	protected.Get("/businesses", metaConnectV2H.Tree)
+	protected.Post("/businesses/sync", metaConnectV2H.Sync)
 
 	// Campaigns
 	campaignH := handler.NewCampaignHandler(campaignUC, aiRouter, metaClient, userTokenRepo)
