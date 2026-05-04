@@ -1,17 +1,36 @@
 export interface AdAccount {
-  id: string | number
-  meta_id?: string
+  meta_id: string
   name: string
   currency?: string
   account_status?: number
+  balance?: number
+  amount_spent?: number
+  spend_cap?: number
+  access_kind?: string
+}
+
+export interface Page {
+  meta_id: string
+  name: string
+  category?: string
+  fan_count?: number
+}
+
+export interface Pixel {
+  meta_id: string
+  name: string
+  is_active?: boolean
+  last_fired?: string
 }
 
 export interface BusinessManager {
-  id: string | number
-  meta_id?: string
+  meta_id: string
   name: string
   verification_status?: string
-  ad_accounts?: AdAccount[]
+  vertical?: string
+  accounts?: AdAccount[]
+  pages?: Page[]
+  pixels?: Pixel[]
 }
 
 export interface MetaTree {

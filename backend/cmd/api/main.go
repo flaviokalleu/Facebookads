@@ -18,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/facebookads/backend/internal/ai"
+	"github.com/facebookads/backend/internal/ai/agents"
 	"github.com/facebookads/backend/internal/ai/providers"
 	"github.com/facebookads/backend/internal/config"
 	"github.com/facebookads/backend/internal/handler"
@@ -102,6 +103,10 @@ func main() {
 	metaPixelRepo   := postgres.NewMetaPixelRepo(db)
 	_               = postgres.NewImovelRepo(db) // wired in a follow-up handler
 
+	// Phase F2/F5/F6 — autonomous AI optimization agent
+	aiActionRepo    := postgres.NewAIActionRepo(db)
+	aiSafetyRepo    := postgres.NewAISafetyRuleRepo(db)
+
 	// ─── Meta Ads client ──────────────────────────────────────────────────────
 	metaClient := metaads.NewClient(cfg.Get("meta.api_version"))
 
@@ -133,8 +138,32 @@ func main() {
 	dashboardUC := usecase.NewDashboardUseCase(campaignRepo, insightRepo, anomalyRepo, budgetRepo, llmUsageRepo, recommendRepo)
 	syncMetaUC  := usecase.NewSyncMetaAccount(metaClient, bmRepo, metaAccRepo, metaPageRepo, metaPixelRepo, metaTokensRepo, credsRepo, cfg)
 
+	// F2 — sync from auto-discovered accounts
+	syncCampaignsUC := usecase.NewSyncMetaCampaigns(metaClient, metaTokensRepo, metaAccRepo, campaignRepo, adSetRepo, adRepo, insightRepo)
+	autoPilotV2     := usecase.NewAutoPilotV2(db, metaClient, metaTokensRepo, metaAccRepo, aiActionRepo, aiSafetyRepo)
+	safetyRulesSvc  := usecase.NewSafetyRulesService(aiSafetyRepo)
+	strategist      := agents.NewStrategist(db, cfg.GetSecret("ai.deepseek.api_key"), metaTokensRepo, metaAccRepo, aiActionRepo, llmUsageRepo)
+
 	// ─── Orchestrator Scheduler ───────────────────────────────────────────────
 	sched := orchestrator.New(db, rdb, aiRouter)
+	sched.SetSyncCampaignsJob(func(ctx context.Context) error {
+		users, err := listActiveTokenUsers(ctx, db)
+		if err != nil {
+			return err
+		}
+		for _, uid := range users {
+			if err := syncCampaignsUC.Run(ctx, uid); err != nil {
+				slog.Warn("sync_meta_campaigns: user failed", "user_id", uid, "err", err)
+			}
+		}
+		return nil
+	})
+	sched.SetAutoPilotV2Job(func(ctx context.Context) error {
+		return autoPilotV2.Run(ctx)
+	})
+	sched.SetStrategistJob(func(ctx context.Context) error {
+		return strategist.Run(ctx)
+	})
 	go sched.Start(context.Background())
 
 	// ─── Fiber app ────────────────────────────────────────────────────────────
@@ -227,6 +256,23 @@ func main() {
 	admin.Get("/admin/ai-usage/daily", adminH.AIUsageDaily)
 	admin.Get("/admin/scheduler/status", adminH.SchedulerStatus)
 
+	// Account detail (per-account KPIs + campaign list)
+	accDetailH := handler.NewAccountDetailHandler(db, cfg)
+	protected.Get("/contas/:account_id", accDetailH.Get)
+	protected.Get("/contas/:account_id/campanhas", accDetailH.ListCampaigns)
+	protected.Get("/contas/:account_id/insights/daily", accDetailH.DailyInsights)
+	protected.Get("/contas/:account_id/analysis", accDetailH.GetAnalysis)
+	protected.Post("/contas/:account_id/analyze", accDetailH.Analyze)
+
+	// AI actions (autonomous optimization agent)
+	aiActionsH := handler.NewAIActionsHandler(aiActionRepo, autoPilotV2, safetyRulesSvc)
+	protected.Get("/ai/actions", aiActionsH.List)
+	protected.Post("/ai/actions/:id/approve", aiActionsH.Approve)
+	protected.Post("/ai/actions/:id/reject", aiActionsH.Reject)
+	protected.Post("/ai/actions/:id/revert", aiActionsH.Revert)
+	protected.Get("/ai/safety-rules", aiActionsH.ListSafetyRules)
+	protected.Put("/ai/safety-rules/:rule_key", aiActionsH.UpsertSafetyRule)
+
 	// Webhooks (public — signature verified internally)
 	webhookH := handler.NewMetaWebhookHandler(db, cfg.GetSecret("meta.app_secret"))
 	api.Get("/webhooks/meta", handler.MetaWebhookVerify)
@@ -253,6 +299,23 @@ func main() {
 	if err := app.ShutdownWithContext(context.Background()); err != nil {
 		slog.Error("shutdown error", "err", err)
 	}
+}
+
+func listActiveTokenUsers(ctx context.Context, db *pgxpool.Pool) ([]string, error) {
+	rows, err := db.Query(ctx, `SELECT DISTINCT user_id::text FROM meta_tokens WHERE is_active = true`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func errorHandler(c *fiber.Ctx, err error) error {

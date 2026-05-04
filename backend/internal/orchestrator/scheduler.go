@@ -30,6 +30,10 @@ type Scheduler struct {
 	rdb     *redis.Client
 	router  *ai.Router
 
+	syncCampaignsJob func(context.Context) error
+	autoPilotV2Job   func(context.Context) error
+	strategistJob    func(context.Context) error
+
 	mu   sync.RWMutex
 	jobs []JobRun
 }
@@ -48,8 +52,26 @@ func New(db *pgxpool.Pool, rdb *redis.Client, router *ai.Router) *Scheduler {
 			{Name: "creative_analysis"},
 			{Name: "provider_health_check"},
 			{Name: "auto_pilot"},
+			{Name: "sync_meta_campaigns"},
+			{Name: "auto_pilot_v2"},
+			{Name: "strategist"},
 		},
 	}
+}
+
+// SetSyncCampaignsJob registers the F2 ad-account-driven campaign sync.
+func (s *Scheduler) SetSyncCampaignsJob(fn func(context.Context) error) {
+	s.syncCampaignsJob = fn
+}
+
+// SetAutoPilotV2Job registers the deterministic safety-rule loop.
+func (s *Scheduler) SetAutoPilotV2Job(fn func(context.Context) error) {
+	s.autoPilotV2Job = fn
+}
+
+// SetStrategistJob registers the daily DeepSeek strategic-plan agent.
+func (s *Scheduler) SetStrategistJob(fn func(context.Context) error) {
+	s.strategistJob = fn
 }
 
 // Start launches all background jobs with their intervals.
@@ -63,9 +85,44 @@ func (s *Scheduler) Start(ctx context.Context) {
 	go s.runLoop(ctx, "budget_advisor", 24*time.Hour, s.budgetAdvisor)
 	go s.runLoop(ctx, "creative_analysis", 24*time.Hour, s.creativeAnalysis)
 	go s.runLoop(ctx, "provider_health_check", 15*time.Minute, s.providerHealthCheck)
-		go s.runLoop(ctx, "auto_pilot", 6*time.Hour, s.autoPilot)
+	go s.runLoop(ctx, "auto_pilot", 6*time.Hour, s.autoPilot)
+
+	if s.syncCampaignsJob != nil {
+		go s.runLoop(ctx, "sync_meta_campaigns", 30*time.Minute, s.syncCampaignsJob)
+	}
+	if s.autoPilotV2Job != nil {
+		go s.runLoop(ctx, "auto_pilot_v2", 1*time.Hour, s.autoPilotV2Job)
+	}
+	if s.strategistJob != nil {
+		go s.runDailyAt(ctx, "strategist", 6, s.strategistJob)
+	}
 
 	slog.Info("scheduler: all jobs started")
+}
+
+// runDailyAt waits until the next occurrence of hour:00 in America/Sao_Paulo
+// (BRT/BRST), then runs fn once a day. The caller's fn is wrapped in runJob
+// so it gets the same locking + status tracking as runLoop.
+func (s *Scheduler) runDailyAt(ctx context.Context, name string, hourBRT int, fn func(context.Context) error) {
+	loc, err := time.LoadLocation("America/Sao_Paulo")
+	if err != nil {
+		loc = time.FixedZone("BRT", -3*3600)
+	}
+	for {
+		now := time.Now().In(loc)
+		next := time.Date(now.Year(), now.Month(), now.Day(), hourBRT, 0, 0, 0, loc)
+		if !next.After(now) {
+			next = next.Add(24 * time.Hour)
+		}
+		wait := time.Until(next)
+		slog.Info("scheduler: daily job scheduled", "name", name, "next", next.Format(time.RFC3339))
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+			s.runJob(ctx, name, fn)
+		}
+	}
 }
 
 // Status returns the current state of all jobs (for admin API).

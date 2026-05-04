@@ -10,6 +10,7 @@ import UiBadge from '~/components/ui/UiBadge.vue'
 definePageMeta({ layout: 'blank' })
 
 const { login, register } = useAuth()
+const { fetchTree } = useMetaTree()
 const apiError = ref<string | null>(null)
 const submitting = ref(false)
 const mode = ref<'login' | 'register'>('login')
@@ -66,7 +67,9 @@ const onSubmit = handleSubmit(async (values) => {
     } else {
       await login({ email: values.email, password: values.password })
     }
-    navigateTo('/onboarding')
+    const tree = await fetchTree()
+    const hasMeta = (tree.businesses?.length || 0) + (tree.personal_accounts?.length || 0) > 0
+    navigateTo(hasMeta ? '/dashboard' : '/onboarding')
   } catch (e: any) {
     apiError.value = extractError(e)
   } finally {

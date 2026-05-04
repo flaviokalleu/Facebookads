@@ -8,6 +8,7 @@ import {
   Settings,
   ScrollText,
   History,
+  Key,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -20,6 +21,7 @@ const links = [
   { to: '/ia/chat', label: 'IA', icon: MessageSquare },
   { to: '/ia/regras', label: 'Regras', icon: ScrollText },
   { to: '/ia/historico', label: 'Histórico', icon: History },
+  { to: '/ajustes/api-keys', label: 'Chaves de IA', icon: Key },
   { to: '/ajustes/token', label: 'Ajustes', icon: Settings },
 ]
 

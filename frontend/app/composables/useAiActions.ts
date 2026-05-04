@@ -24,6 +24,12 @@ export interface SafetyRule {
   description?: string
 }
 
+export interface SafetyRulesResponse {
+  defaults: Record<string, number>
+  effective: Record<string, number>
+  overrides: Array<{ rule_key: string; rule_value: number; account_meta_id: string | null }>
+}
+
 export function useAiActions() {
   const api = useApi()
 
@@ -53,8 +59,19 @@ export function useAiActions() {
 
   async function listRules(): Promise<SafetyRule[]> {
     try {
-      const res = await api.get<{ data: SafetyRule[] }>('/ai/safety-rules')
-      return res?.data ?? []
+      const res = await api.get<{ data: SafetyRulesResponse }>('/ai/safety-rules')
+      const d = res?.data
+      if (!d) return []
+      const overrideMap = new Map(d.overrides.map(o => [o.rule_key, o]))
+      return Object.entries(d.effective).map(([key, value]) => {
+        const override = overrideMap.get(key)
+        return {
+          rule_key: key,
+          rule_value: value,
+          account_meta_id: override?.account_meta_id ?? null,
+          is_default: !override,
+        }
+      })
     } catch {
       return []
     }

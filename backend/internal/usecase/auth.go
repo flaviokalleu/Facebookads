@@ -91,7 +91,7 @@ func (uc *AuthUseCase) issueToken(user *domain.User) (*AuthOutput, error) {
 		return nil, fmt.Errorf("jwt.secret not configured")
 	}
 
-	exp := time.Now().Add(15 * time.Minute)
+	exp := time.Now().Add(7 * 24 * time.Hour)
 	claims := middleware.Claims{
 		UserID:  user.ID,
 		IsAdmin: user.IsAdmin,

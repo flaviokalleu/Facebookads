@@ -10,6 +10,14 @@ import { useOnboardingStore } from '~/stores/onboarding'
 definePageMeta({ layout: 'blank' })
 
 const onboarding = useOnboardingStore()
+const { fetchTree } = useMetaTree()
+
+onMounted(async () => {
+  const tree = await fetchTree()
+  if ((tree.businesses?.length || 0) + (tree.personal_accounts?.length || 0) > 0) {
+    navigateTo('/dashboard')
+  }
+})
 
 const schema = toTypedSchema(
   z.object({
