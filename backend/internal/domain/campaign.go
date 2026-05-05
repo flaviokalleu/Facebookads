@@ -12,19 +12,22 @@ const (
 )
 
 type Campaign struct {
-	ID              string       `json:"id"`
-	MetaCampaignID  string       `json:"meta_campaign_id"`
-	UserID          string       `json:"user_id"`
-	AdAccountID     string       `json:"ad_account_id"`
-	Name            string       `json:"name"`
-	Objective       string       `json:"objective"`
-	Status          string       `json:"status"`
-	DailyBudget     *float64     `json:"daily_budget,omitempty"`
-	LifetimeBudget  *float64     `json:"lifetime_budget,omitempty"`
-	HealthStatus    HealthStatus `json:"health_status"`
-	LastSyncedAt    *time.Time   `json:"last_synced_at,omitempty"`
-	CreatedAt       time.Time    `json:"created_at"`
-	UpdatedAt       time.Time    `json:"updated_at"`
+	ID               string       `json:"id"`
+	MetaCampaignID   string       `json:"meta_campaign_id"`
+	UserID           string       `json:"user_id"`
+	AdAccountID      string       `json:"ad_account_id"`
+	Name             string       `json:"name"`
+	Objective        string       `json:"objective"`
+	Status           string       `json:"status"`
+	DailyBudget      *float64     `json:"daily_budget,omitempty"`
+	LifetimeBudget   *float64     `json:"lifetime_budget,omitempty"`
+	HealthStatus     HealthStatus `json:"health_status"`
+	LastSyncedAt     *time.Time   `json:"last_synced_at,omitempty"`
+	MetaCreatedTime  *time.Time   `json:"meta_created_time,omitempty"`
+	MetaStartTime    *time.Time   `json:"meta_start_time,omitempty"`
+	MetaStopTime     *time.Time   `json:"meta_stop_time,omitempty"`
+	CreatedAt        time.Time    `json:"created_at"`
+	UpdatedAt        time.Time    `json:"updated_at"`
 }
 
 type AdSet struct {

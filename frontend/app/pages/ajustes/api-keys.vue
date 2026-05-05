@@ -19,6 +19,7 @@ const providers: ProviderKey[] = [
 ]
 
 const api = useApi()
+const toast = useToast()
 const values = reactive<Record<string, string>>({})
 const masked = reactive<Record<string, boolean>>({})
 const saving = reactive<Record<string, boolean>>({})
@@ -49,11 +50,13 @@ async function save(p: ProviderKey) {
   try {
     await api.put(`/admin/config/${p.key}`, { value: values[p.key], is_secret: true })
     message.value = { key: p.key, text: 'Chave salva. Pode levar até 5 minutos para a IA usar a nova chave.', ok: true }
+    toast.success(`${p.label} configurado`, 'Chave salva e criptografada.')
     values[p.key] = ''
     await loadStatus()
   } catch (e: any) {
     const msg = e?.data?.error?.message || e?.message || 'Não foi possível salvar.'
     message.value = { key: p.key, text: msg, ok: false }
+    toast.error('Não foi possível salvar', msg)
   } finally {
     saving[p.key] = false
   }

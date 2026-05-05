@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/facebookads/backend/internal/ai"
+	"github.com/facebookads/backend/internal/ai/prompts"
 	"github.com/facebookads/backend/internal/ai/providers"
 	"github.com/facebookads/backend/internal/domain"
 	"github.com/facebookads/backend/internal/repository"
@@ -43,31 +44,9 @@ func NewStrategist(
 	}
 }
 
-const strategistSystemPrompt = `Você é um gestor de tráfego sênior especializado em mercado imobiliário multi-segmento (MCMV, médio, alto, comercial, terrenos, lançamentos), com vasta experiência em campanhas Meta Ads Click-to-WhatsApp.
-
-Sua função é analisar a saúde da conta e propor ações estratégicas. Cada ação que você propor passará por aprovação humana antes de ser executada.
-
-REGRAS:
-1. Só proponha pausa de adset se o CPL estiver pelo menos 2x acima da média do conjunto E houver gasto de pelo menos R$ 30.
-2. Só proponha aumento de budget se a campanha tiver ROAS / CPL claramente melhor que a média da conta E spend > R$ 50 nos últimos 7 dias (sinal estatístico).
-3. Reduções de budget devem ser propostas apenas se houver tendência clara de queda.
-4. Use factor entre 0.5 e 2.0 em scale_budget (limites de segurança).
-5. Sempre justifique cada ação com números do snapshot.
-6. Se nada relevante puder ser proposto com confiança, use propose_only com um resumo.
-
-FORMATO DE RESPOSTA (JSON estrito):
-{
-  "tool_calls": [
-    {"name": "alert", "args": {"target_id": "...", "target_kind": "ad|adset", "severity": "high|medium|low", "reason": "..."}},
-    {"name": "pause_adset", "args": {"adset_id": "...", "reason": "..."}},
-    {"name": "scale_budget", "args": {"adset_id": "...", "factor": 1.5, "reason": "..."}},
-    {"name": "duplicate_adset", "args": {"adset_id": "...", "budget_factor": 1.0, "reason": "..."}},
-    {"name": "rotate_creative", "args": {"ad_id": "...", "reason": "..."}},
-    {"name": "propose_only", "args": {"plan_summary": "..."}}
-  ]
-}
-
-Responda APENAS com JSON válido. Não inclua markdown.`
+// strategistSystemPrompt agora vive em internal/ai/prompts/imobiliario.go
+// (StrategistSystemPrompt) com benchmarks de mercado e playbook detalhado.
+var strategistSystemPrompt = prompts.StrategistSystemPrompt
 
 type strategistToolCall struct {
 	Name string                 `json:"name"`

@@ -101,7 +101,7 @@ func main() {
 	metaAccRepo     := postgres.NewMetaAdAccountRepo(db)
 	metaPageRepo    := postgres.NewMetaPageRepo(db, cfg)
 	metaPixelRepo   := postgres.NewMetaPixelRepo(db)
-	_               = postgres.NewImovelRepo(db) // wired in a follow-up handler
+	imovelRepo      := postgres.NewImovelRepo(db)
 
 	// Phase F2/F5/F6 — autonomous AI optimization agent
 	aiActionRepo    := postgres.NewAIActionRepo(db)
@@ -228,6 +228,42 @@ func main() {
 	// Dashboard
 	dashH := handler.NewDashboardHandler(dashboardUC)
 	protected.Get("/dashboard/summary", dashH.Summary)
+
+	// Aggregated overview across ALL discovered ad accounts.
+	dashOverviewH := handler.NewDashboardOverviewHandler(db)
+	protected.Get("/dashboard/overview", dashOverviewH.Overview)
+
+	// Free-form AI chat about the user's accounts.
+	aiChatH := handler.NewAIChatHandler(db, cfg)
+	protected.Get("/ai/chat", aiChatH.History)
+	protected.Post("/ai/chat", aiChatH.Send)
+	protected.Delete("/ai/chat", aiChatH.Clear)
+	protected.Get("/ai/chat/suggestions", aiChatH.Suggest)
+
+	// Cross-account campaigns list with windowed insights.
+	campaignsListH := handler.NewCampaignsListHandler(db)
+	protected.Get("/campanhas", campaignsListH.List)
+
+	// Campaign detail (PT route — returns campaign + adsets + ads + daily + ai actions).
+	campaignDetailH := handler.NewCampaignDetailHandler(db)
+	protected.Get("/campanhas/:id", campaignDetailH.Get)
+
+	// Token health (F1 flow — meta_tokens + app_credentials)
+	tokenHealthH := handler.NewTokenHealthHandler(metaTokensRepo, credsRepo, credsRepo, metaClient, cfg)
+	protected.Get("/auth/meta/token/health", tokenHealthH.Health)
+	protected.Post("/auth/meta/token/refresh", tokenHealthH.Refresh)
+
+	// Públicos / Custom Audiences cross-account
+	publicosH := handler.NewPublicosHandler(metaTokensRepo, metaAccRepo, metaClient)
+	protected.Get("/publicos", publicosH.List)
+
+	// Imoveis (catálogo multi-segmento)
+	imoveisH := handler.NewImoveisHandler(imovelRepo)
+	protected.Get("/imoveis", imoveisH.List)
+	protected.Post("/imoveis", imoveisH.Create)
+	protected.Get("/imoveis/:id", imoveisH.Get)
+	protected.Patch("/imoveis/:id", imoveisH.Update)
+	protected.Delete("/imoveis/:id", imoveisH.Delete)
 	protected.Get("/dashboard/campaigns", dashH.Campaigns)
 	protected.Get("/dashboard/campaigns/:id/insights", dashH.CampaignInsights)
 	protected.Get("/dashboard/top-creatives", dashH.TopCreatives)
@@ -257,10 +293,11 @@ func main() {
 	admin.Get("/admin/scheduler/status", adminH.SchedulerStatus)
 
 	// Account detail (per-account KPIs + campaign list)
-	accDetailH := handler.NewAccountDetailHandler(db, cfg)
+	accDetailH := handler.NewAccountDetailHandler(db, cfg, metaTokensRepo, metaClient)
 	protected.Get("/contas/:account_id", accDetailH.Get)
 	protected.Get("/contas/:account_id/campanhas", accDetailH.ListCampaigns)
 	protected.Get("/contas/:account_id/insights/daily", accDetailH.DailyInsights)
+	protected.Get("/contas/:account_id/breakdowns", accDetailH.Breakdowns)
 	protected.Get("/contas/:account_id/analysis", accDetailH.GetAnalysis)
 	protected.Post("/contas/:account_id/analyze", accDetailH.Analyze)
 

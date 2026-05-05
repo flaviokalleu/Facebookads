@@ -17,6 +17,7 @@ export function useApi() {
     get:    <T>(path: string, opts: any = {}) => request<T>(path, { ...opts, method: 'GET' }),
     post:   <T>(path: string, body?: any, opts: any = {}) => request<T>(path, { ...opts, method: 'POST', body }),
     put:    <T>(path: string, body?: any, opts: any = {}) => request<T>(path, { ...opts, method: 'PUT', body }),
+    patch:  <T>(path: string, body?: any, opts: any = {}) => request<T>(path, { ...opts, method: 'PATCH', body }),
     del:    <T>(path: string, opts: any = {}) => request<T>(path, { ...opts, method: 'DELETE' }),
   }
 }

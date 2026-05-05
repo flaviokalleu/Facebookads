@@ -23,21 +23,26 @@ func (r *CampaignRepo) Upsert(ctx context.Context, c *domain.Campaign) error {
 	err := r.db.QueryRow(ctx, `
 		INSERT INTO campaigns
 		  (meta_campaign_id, user_id, ad_account_id, name, objective, status,
-		   daily_budget, lifetime_budget, health_status, last_synced_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+		   daily_budget, lifetime_budget, health_status, last_synced_at,
+		   meta_created_time, meta_start_time, meta_stop_time, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())
 		ON CONFLICT (user_id, meta_campaign_id) DO UPDATE SET
-		  name            = EXCLUDED.name,
-		  objective       = EXCLUDED.objective,
-		  status          = EXCLUDED.status,
-		  daily_budget    = EXCLUDED.daily_budget,
-		  lifetime_budget = EXCLUDED.lifetime_budget,
-		  last_synced_at  = EXCLUDED.last_synced_at,
-		  updated_at      = now(),
-		  deleted_at      = NULL
+		  name              = EXCLUDED.name,
+		  objective         = EXCLUDED.objective,
+		  status            = EXCLUDED.status,
+		  daily_budget      = EXCLUDED.daily_budget,
+		  lifetime_budget   = EXCLUDED.lifetime_budget,
+		  last_synced_at    = EXCLUDED.last_synced_at,
+		  meta_created_time = COALESCE(EXCLUDED.meta_created_time, campaigns.meta_created_time),
+		  meta_start_time   = COALESCE(EXCLUDED.meta_start_time, campaigns.meta_start_time),
+		  meta_stop_time    = EXCLUDED.meta_stop_time,
+		  updated_at        = now(),
+		  deleted_at        = NULL
 		RETURNING id, created_at, updated_at
 	`,
 		c.MetaCampaignID, c.UserID, c.AdAccountID, c.Name, c.Objective, c.Status,
 		c.DailyBudget, c.LifetimeBudget, c.HealthStatus, c.LastSyncedAt,
+		c.MetaCreatedTime, c.MetaStartTime, c.MetaStopTime,
 	).Scan(&c.ID, &c.CreatedAt, &c.UpdatedAt)
 	return err
 }
@@ -45,7 +50,9 @@ func (r *CampaignRepo) Upsert(ctx context.Context, c *domain.Campaign) error {
 func (r *CampaignRepo) GetByID(ctx context.Context, id string) (*domain.Campaign, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT id, meta_campaign_id, user_id, ad_account_id, name, objective, status,
-		       daily_budget, lifetime_budget, health_status, last_synced_at, created_at, updated_at
+		       daily_budget, lifetime_budget, health_status, last_synced_at,
+		       meta_created_time, meta_start_time, meta_stop_time,
+		       created_at, updated_at
 		FROM campaigns WHERE id = $1 AND deleted_at IS NULL
 	`, id)
 	return scanCampaign(row)
@@ -54,7 +61,9 @@ func (r *CampaignRepo) GetByID(ctx context.Context, id string) (*domain.Campaign
 func (r *CampaignRepo) GetByMetaID(ctx context.Context, userID, metaID string) (*domain.Campaign, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT id, meta_campaign_id, user_id, ad_account_id, name, objective, status,
-		       daily_budget, lifetime_budget, health_status, last_synced_at, created_at, updated_at
+		       daily_budget, lifetime_budget, health_status, last_synced_at,
+		       meta_created_time, meta_start_time, meta_stop_time,
+		       created_at, updated_at
 		FROM campaigns WHERE user_id = $1 AND meta_campaign_id = $2 AND deleted_at IS NULL
 	`, userID, metaID)
 	return scanCampaign(row)
@@ -63,7 +72,9 @@ func (r *CampaignRepo) GetByMetaID(ctx context.Context, userID, metaID string) (
 func (r *CampaignRepo) ListByUser(ctx context.Context, userID string) ([]*domain.Campaign, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id, meta_campaign_id, user_id, ad_account_id, name, objective, status,
-		       daily_budget, lifetime_budget, health_status, last_synced_at, created_at, updated_at
+		       daily_budget, lifetime_budget, health_status, last_synced_at,
+		       meta_created_time, meta_start_time, meta_stop_time,
+		       created_at, updated_at
 		FROM campaigns WHERE user_id = $1 AND deleted_at IS NULL ORDER BY name
 	`, userID)
 	if err != nil {
@@ -117,12 +128,13 @@ type scanner interface {
 
 func scanCampaign(s scanner) (*domain.Campaign, error) {
 	var c domain.Campaign
-	var lastSynced *time.Time
+	var lastSynced, metaCreated, metaStart, metaStop *time.Time
 	err := s.Scan(
 		&c.ID, &c.MetaCampaignID, &c.UserID, &c.AdAccountID,
 		&c.Name, &c.Objective, &c.Status,
 		&c.DailyBudget, &c.LifetimeBudget,
 		&c.HealthStatus, &lastSynced,
+		&metaCreated, &metaStart, &metaStop,
 		&c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
@@ -132,5 +144,8 @@ func scanCampaign(s scanner) (*domain.Campaign, error) {
 		return nil, err
 	}
 	c.LastSyncedAt = lastSynced
+	c.MetaCreatedTime = metaCreated
+	c.MetaStartTime = metaStart
+	c.MetaStopTime = metaStop
 	return &c, nil
 }

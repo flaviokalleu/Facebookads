@@ -7,6 +7,7 @@ import UiButton from '~/components/ui/UiButton.vue'
 import { useAiActions, type SafetyRule } from '~/composables/useAiActions'
 
 const ai = useAiActions()
+const toast = useToast()
 const rules = ref<SafetyRule[]>([])
 const loading = ref(true)
 const editValues = reactive<Record<string, string>>({})
@@ -14,13 +15,26 @@ const saving = reactive<Record<string, boolean>>({})
 const message = ref<string | null>(null)
 
 const labels: Record<string, { title: string, hint: string, format: (v: number) => string }> = {
-  pause_cpl_ratio:      { title: 'Pausar quando custo for X vezes a média da conta', hint: 'Ex: 3 = pausa quando o custo por contato for 3× a média',  format: (v) => `${v}×` },
-  alert_cpl_ratio:      { title: 'Alertar quando custo for X vezes a média',         hint: 'Não pausa, só sinaliza pra revisão',                       format: (v) => `${v}×` },
-  min_spend_to_pause:   { title: 'Gasto mínimo antes de pausar (R$)',                 hint: 'Protege contra leitura ruim de amostras pequenas',         format: (v) => `R$ ${v.toFixed(2)}` },
-  min_age_hours:        { title: 'Idade mínima do anúncio antes de pausar (horas)',  hint: 'Não mexe na fase de aprendizagem',                          format: (v) => `${v}h` },
-  max_pause_pct_per_day:{ title: 'Teto de pausas por dia (% dos anúncios ativos)',   hint: 'Proteção contra pausa em cascata',                          format: (v) => `${(v * 100).toFixed(0)}%` },
-  alert_ctr_min:        { title: 'CTR mínimo aceitável',                              hint: 'Abaixo disso, sinaliza atenção',                            format: (v) => `${(v * 100).toFixed(1)}%` },
-  alert_freq_max:       { title: 'Frequência máxima antes de avisar fadiga',         hint: 'Acima disso, IA sugere rotacionar criativo',                format: (v) => v.toFixed(1) },
+  // Maturidade — bloqueio antes de qualquer ação
+  min_age_hours:             { title: 'Idade mínima da campanha pra IA agir',           hint: 'Padrão 7 dias. Antes disso a IA não mexe — campanha ainda em aprendizagem do Meta.',  format: (v) => `${(v / 24).toFixed(1)} dias` },
+  min_conversions_to_decide: { title: 'Conversões mínimas em 7 dias pra IA agir',       hint: 'Meta exige ~50 eventos pra sair da fase de aprendizagem. Abaixo disso, leitura é ruim.', format: (v) => `${v.toFixed(0)} conversões` },
+  respect_learning_phase:    { title: 'Respeitar fase de aprendizagem do Meta',         hint: '1 = sim (recomendado). 0 = ignorar e agir mesmo com poucos dados.',                    format: (v) => v >= 0.5 ? 'Ativado' : 'Desativado' },
+
+  // Pausa
+  pause_cpl_ratio:      { title: 'Pausar quando custo for X vezes a média da conta', hint: 'Ex: 3 = pausa quando o custo por contato for 3× a média',                                  format: (v) => `${v}×` },
+  alert_cpl_ratio:      { title: 'Alertar quando custo for X vezes a média',         hint: 'Não pausa, só sinaliza pra revisão',                                                       format: (v) => `${v}×` },
+  min_spend_to_pause:   { title: 'Gasto mínimo antes de pausar (R$)',                 hint: 'Protege contra leitura ruim de amostras pequenas',                                          format: (v) => `R$ ${v.toFixed(2)}` },
+  max_pause_pct_per_day:{ title: 'Teto de pausas por dia (% dos anúncios ativos)',   hint: 'Proteção contra pausa em cascata',                                                          format: (v) => `${(v * 100).toFixed(0)}%` },
+
+  // Sinais
+  alert_ctr_min:        { title: 'CTR mínimo aceitável',                              hint: 'Abaixo disso, sinaliza atenção',                                                            format: (v) => `${(v * 100).toFixed(1)}%` },
+  alert_freq_max:       { title: 'Frequência máxima antes de avisar fadiga',         hint: 'Acima disso, IA sugere rotacionar criativo',                                                format: (v) => v.toFixed(1) },
+
+  // Escalar (vencedores)
+  scale_cpl_ratio:      { title: 'Escalar quando custo estiver até X vezes a média',  hint: 'Ex: 0.6 = escala quando custo está 40% abaixo da média (vencedor).',                       format: (v) => `${v}×` },
+  scale_min_ctr:        { title: 'CTR mínimo pra escalar',                             hint: 'Vencedor precisa ter CTR alto pra justificar mais verba',                                  format: (v) => `${(v * 100).toFixed(1)}%` },
+  scale_max_freq:       { title: 'Frequência máxima pra escalar',                     hint: 'Acima disso, escalar verticalmente vai saturar — duplicar é melhor',                       format: (v) => v.toFixed(1) },
+  scale_factor:         { title: 'Quanto aumentar (multiplicador)',                   hint: 'Ex: 1.2 = +20% de verba. Limite Meta-friendly pra não resetar aprendizagem.',              format: (v) => `${((v - 1) * 100).toFixed(0)}% a mais` },
 }
 
 async function load() {
@@ -42,9 +56,12 @@ async function save(rule: SafetyRule) {
   try {
     await ai.setRule(rule.rule_key, v, rule.account_meta_id ?? undefined)
     message.value = 'Regra atualizada.'
+    toast.success('Regra atualizada', `${labels[rule.rule_key]?.title || rule.rule_key} → ${labels[rule.rule_key]?.format(v) || v}`)
     await load()
   } catch (e: any) {
-    message.value = e?.data?.error?.message || 'Não foi possível salvar.'
+    const m = e?.data?.error?.message || 'Não foi possível salvar.'
+    message.value = m
+    toast.error('Não foi possível salvar', m)
   } finally {
     saving[rule.rule_key] = false
   }

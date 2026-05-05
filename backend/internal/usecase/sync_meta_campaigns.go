@@ -148,20 +148,40 @@ func (u *SyncMetaCampaigns) syncAccount(ctx context.Context, userID, accessToken
 			}
 		}
 
+		// Meta's "last_30d" exclui o dia corrente. Para refletir o que o usuário
+		// vê no Gerenciador de Anúncios em tempo real, fazemos uma 2ª chamada
+		// com preset "today" e mergiamos.
 		rateBump(ctx, calls)
-		raw, err := u.meta.GetInsights(ctx, accessToken, mc.ID, "last_30d")
+		hist, err := u.meta.GetInsights(ctx, accessToken, mc.ID, "last_30d")
 		if err != nil {
 			slog.Warn("sync_meta_campaigns: insights failed",
 				"campaign", mc.ID, "err", err)
-			continue
 		}
-		for _, r := range raw {
+		for _, r := range hist {
 			ins, perr := metaInsightToDomain(r, c.ID)
 			if perr != nil {
 				continue
 			}
 			if err := u.insights.Upsert(ctx, ins); err != nil {
 				slog.Warn("sync_meta_campaigns: insight upsert failed",
+					"campaign", mc.ID, "err", err)
+			}
+		}
+
+		rateBump(ctx, calls)
+		today, err := u.meta.GetInsights(ctx, accessToken, mc.ID, "today")
+		if err != nil {
+			slog.Warn("sync_meta_campaigns: today insights failed",
+				"campaign", mc.ID, "err", err)
+			continue
+		}
+		for _, r := range today {
+			ins, perr := metaInsightToDomain(r, c.ID)
+			if perr != nil {
+				continue
+			}
+			if err := u.insights.Upsert(ctx, ins); err != nil {
+				slog.Warn("sync_meta_campaigns: today upsert failed",
 					"campaign", mc.ID, "err", err)
 			}
 		}

@@ -91,7 +91,10 @@ func (a *AutoPilotV2) runForAccount(ctx context.Context, userID, accessToken str
 	type adRow struct {
 		AdID, MetaAdID, AdName, AdStatus string
 		AdCreatedAt                      time.Time
+		AdSetMetaID                      string
+		AdSetDailyBudget                 float64
 		Campaign                         *domain.Campaign
+		CampaignCreatedAt                time.Time
 		Spend7d                          float64
 		Leads7d                          int64
 		AvgCTR                           float64
@@ -101,8 +104,9 @@ func (a *AutoPilotV2) runForAccount(ctx context.Context, userID, accessToken str
 	rows, err := a.db.Query(ctx, `
 		SELECT
 		  ads.id, ads.meta_ad_id, ads.name, ads.status, ads.created_at,
+		  aset.meta_ad_set_id, COALESCE(aset.daily_budget, 0)::float8,
 		  c.id, c.meta_campaign_id, c.user_id, c.ad_account_id, c.name, c.objective, c.status,
-		  c.daily_budget, c.lifetime_budget, c.health_status,
+		  c.daily_budget, c.lifetime_budget, c.health_status, c.created_at,
 		  COALESCE(s.spend_7d, 0)::float8,
 		  COALESCE(s.leads_7d, 0)::bigint,
 		  COALESCE(s.avg_ctr, 0)::float8,
@@ -134,13 +138,12 @@ func (a *AutoPilotV2) runForAccount(ctx context.Context, userID, accessToken str
 	for rows.Next() {
 		var r adRow
 		var camp domain.Campaign
-		var lastSynced *time.Time
-		_ = lastSynced // not selected here
 		if err := rows.Scan(
 			&r.AdID, &r.MetaAdID, &r.AdName, &r.AdStatus, &r.AdCreatedAt,
+			&r.AdSetMetaID, &r.AdSetDailyBudget,
 			&camp.ID, &camp.MetaCampaignID, &camp.UserID, &camp.AdAccountID,
 			&camp.Name, &camp.Objective, &camp.Status,
-			&camp.DailyBudget, &camp.LifetimeBudget, &camp.HealthStatus,
+			&camp.DailyBudget, &camp.LifetimeBudget, &camp.HealthStatus, &r.CampaignCreatedAt,
 			&r.Spend7d, &r.Leads7d, &r.AvgCTR, &r.AvgFreq,
 		); err != nil {
 			return fmt.Errorf("scan ad: %w", err)
@@ -183,17 +186,22 @@ func (a *AutoPilotV2) runForAccount(ctx context.Context, userID, accessToken str
 			Status:    r.AdStatus,
 			CreatedAt: r.AdCreatedAt,
 		}
+		campAge := time.Since(r.CampaignCreatedAt).Hours()
 		eval := &AdEvaluation{
-			Ad:            ad,
-			Campaign:      r.Campaign,
-			AccountMetaID: acc.MetaID,
-			UserID:        userID,
-			AdSpend7d:     r.Spend7d,
-			AdLeads7d:     r.Leads7d,
-			AdCTR7d:       r.AvgCTR,
-			AdFreq7d:      r.AvgFreq,
-			AccountAvgCPL: avgCPL,
-			AdAgeHours:    ageHours,
+			Ad:               ad,
+			Campaign:         r.Campaign,
+			AdSetMetaID:      r.AdSetMetaID,
+			AdSetDailyBudget: r.AdSetDailyBudget,
+			AccountMetaID:    acc.MetaID,
+			UserID:           userID,
+			AdSpend7d:        r.Spend7d,
+			AdLeads7d:        r.Leads7d,
+			AdCTR7d:          r.AvgCTR,
+			AdFreq7d:         r.AvgFreq,
+			AccountAvgCPL:    avgCPL,
+			AdAgeHours:       ageHours,
+			CampaignAgeHours: campAge,
+			CampaignLeads7d:  r.Leads7d, // proxy: campaign-level 7d leads (already aggregated above)
 		}
 		action := EvaluateAd(eval, rules)
 		if action == nil {

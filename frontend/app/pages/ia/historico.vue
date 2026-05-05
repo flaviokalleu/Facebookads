@@ -7,6 +7,7 @@ import ActionCard from '~/components/ai/ActionCard.vue'
 import { useAiActions, type AIAction } from '~/composables/useAiActions'
 
 const ai = useAiActions()
+const toast = useToast()
 const filter = ref<'all' | AIAction['status']>('all')
 const items = ref<AIAction[]>([])
 const loading = ref(true)
@@ -36,13 +37,37 @@ onMounted(load)
 watch(filter, load)
 
 async function onApprove(id: string) {
-  try { await ai.approve(id); await load() } catch (e: any) { errorMsg.value = e?.message }
+  try {
+    await ai.approve(id)
+    toast.success('Ação aprovada e executada')
+    await load()
+  } catch (e: any) {
+    const m = e?.data?.error?.message || e?.message || 'Falha ao aprovar'
+    errorMsg.value = m
+    toast.error('Não foi possível aprovar', m)
+  }
 }
 async function onReject(id: string) {
-  try { await ai.reject(id); await load() } catch (e: any) { errorMsg.value = e?.message }
+  try {
+    await ai.reject(id)
+    toast.info('Ação recusada')
+    await load()
+  } catch (e: any) {
+    const m = e?.data?.error?.message || e?.message || 'Falha ao recusar'
+    errorMsg.value = m
+    toast.error('Não foi possível recusar', m)
+  }
 }
 async function onRevert(id: string) {
-  try { await ai.revert(id); await load() } catch (e: any) { errorMsg.value = e?.message }
+  try {
+    await ai.revert(id)
+    toast.success('Ação revertida', 'O anúncio voltou ao estado anterior.')
+    await load()
+  } catch (e: any) {
+    const m = e?.data?.error?.message || e?.message || 'Falha ao reverter'
+    errorMsg.value = m
+    toast.error('Não foi possível reverter', m)
+  }
 }
 </script>
 

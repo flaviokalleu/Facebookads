@@ -22,6 +22,7 @@ type Client interface {
 	GetAdSets(ctx context.Context, accessToken, campaignID string) ([]MetaAdSet, error)
 	GetAds(ctx context.Context, accessToken, adSetID string) ([]MetaAd, error)
 	GetInsights(ctx context.Context, accessToken, campaignID string, datePreset string) ([]MetaInsight, error)
+	GetAccountInsightsBreakdown(ctx context.Context, accessToken, accountID, dim, datePreset string) ([]BreakdownRow, error)
 	UpdateAdSet(ctx context.Context, accessToken, adSetID string, updates map[string]any) error
 	UpdateAd(ctx context.Context, accessToken, adID string, updates map[string]any) error
 	UpdateCampaign(ctx context.Context, accessToken, campaignID string, updates map[string]any) error
@@ -43,6 +44,9 @@ type Client interface {
 	GetBMPages(ctx context.Context, accessToken, appSecret, bmID string) ([]Page, error)
 	GetBMPixels(ctx context.Context, accessToken, appSecret, bmID string) ([]Pixel, error)
 	GetBMInstagram(ctx context.Context, accessToken, appSecret, bmID string) ([]InstagramAccount, error)
+
+	// Audiences (audiences.go)
+	GetCustomAudiences(ctx context.Context, accessToken, accountID string) ([]CustomAudience, error)
 }
 
 type httpClient struct {
@@ -74,12 +78,15 @@ type AdAccount struct {
 }
 
 type MetaCampaign struct {
-	ID             string  `json:"id"`
-	Name           string  `json:"name"`
-	Objective      string  `json:"objective"`
-	Status         string  `json:"status"`
-	DailyBudget    string  `json:"daily_budget"`
-	LifetimeBudget string  `json:"lifetime_budget"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Objective      string `json:"objective"`
+	Status         string `json:"status"`
+	DailyBudget    string `json:"daily_budget"`
+	LifetimeBudget string `json:"lifetime_budget"`
+	CreatedTime    string `json:"created_time"`
+	StartTime      string `json:"start_time"`
+	StopTime       string `json:"stop_time"`
 }
 
 type MetaAdSet struct {
@@ -208,7 +215,7 @@ func (c *httpClient) GetAdAccounts(ctx context.Context, accessToken string) ([]A
 func (c *httpClient) GetCampaigns(ctx context.Context, accessToken, adAccountID string) ([]MetaCampaign, error) {
 	params := url.Values{}
 	params.Set("access_token", accessToken)
-	params.Set("fields", "id,name,objective,status,daily_budget,lifetime_budget")
+	params.Set("fields", "id,name,objective,status,daily_budget,lifetime_budget,created_time,start_time,stop_time")
 	params.Set("limit", "500")
 
 	var result []MetaCampaign
@@ -261,6 +268,162 @@ func (c *httpClient) GetInsights(ctx context.Context, accessToken, campaignID, d
 		return nil, fmt.Errorf("get insights: %w", err)
 	}
 	return result, nil
+}
+
+// ─── Breakdowns ───────────────────────────────────────────────────────────────
+
+// BreakdownRow is a single row of an account-level insights breakdown query.
+// Dim holds the raw breakdown values (e.g. {"region":"Federal District"} or
+// {"age":"25-34","gender":"male"}); the metric fields are the rolled-up totals.
+type BreakdownRow struct {
+	Dim         map[string]string `json:"dim"`
+	Spend       float64           `json:"spend"`
+	Impressions int64             `json:"impressions"`
+	Clicks      int64             `json:"clicks"`
+	Leads       int64             `json:"leads"`
+	CPL         float64           `json:"cpl"`
+	CTR         float64           `json:"ctr"`
+}
+
+// allowedBreakdownDims are the breakdowns we accept from callers — keep tight
+// because Meta will silently 400 on combos it doesn't support and we'd rather
+// fail fast with a friendly error.
+var allowedBreakdownDims = map[string]struct{}{
+	"region":                                       {},
+	"age,gender":                                   {},
+	"hourly_stats_aggregated_by_advertiser_time_zone": {},
+	"publisher_platform":                           {},
+	"platform_position":                            {},
+	"impression_device":                            {},
+}
+
+// leadActionTypes are the action_type strings we sum into BreakdownRow.Leads.
+// We de-dup by action_type so we don't double-count when multiple are present.
+var leadActionTypes = map[string]struct{}{
+	"onsite_conversion.messaging_conversation_started_7d": {},
+	"lead":                          {},
+	"leadgen.other":                 {},
+	"offsite_conversion.fb_pixel_lead": {},
+}
+
+// metricKeys identify the non-dimension keys returned in each breakdown row.
+// Anything else in the JSON object is folded into BreakdownRow.Dim.
+var metricKeys = map[string]struct{}{
+	"spend":                  {},
+	"impressions":            {},
+	"clicks":                 {},
+	"actions":                {},
+	"cost_per_action_type":   {},
+	"date_start":             {},
+	"date_stop":              {},
+	"account_id":             {},
+}
+
+func (c *httpClient) GetAccountInsightsBreakdown(ctx context.Context, accessToken, accountID, dim, datePreset string) ([]BreakdownRow, error) {
+	if _, ok := allowedBreakdownDims[dim]; !ok {
+		return nil, fmt.Errorf("invalid breakdown dim: %q", dim)
+	}
+	if datePreset == "" {
+		datePreset = "last_7d"
+	}
+	// Strip any "act_" prefix the caller may have left on, then re-add — keeps
+	// the function tolerant to either shape.
+	id := accountID
+	if len(id) > 4 && id[:4] == "act_" {
+		id = id[4:]
+	}
+
+	params := url.Values{}
+	params.Set("access_token", accessToken)
+	params.Set("breakdowns", dim)
+	params.Set("fields", "spend,impressions,clicks,actions,cost_per_action_type")
+	params.Set("date_preset", datePreset)
+	params.Set("level", "account")
+	params.Set("limit", "200")
+
+	// Decode into raw maps first so we can split metric keys from dim keys.
+	var raw []map[string]json.RawMessage
+	if err := c.get(ctx, fmt.Sprintf("act_%s/insights", id), params, &raw); err != nil {
+		return nil, fmt.Errorf("get account insights breakdown: %w", err)
+	}
+
+	out := make([]BreakdownRow, 0, len(raw))
+	for _, row := range raw {
+		br := BreakdownRow{Dim: map[string]string{}}
+
+		// Sum lead-style action types, de-duped by action_type.
+		if v, ok := row["actions"]; ok && len(v) > 0 {
+			var actions []MetaAction
+			if err := json.Unmarshal(v, &actions); err == nil {
+				seen := map[string]bool{}
+				for _, a := range actions {
+					if _, isLead := leadActionTypes[a.ActionType]; !isLead {
+						continue
+					}
+					if seen[a.ActionType] {
+						continue
+					}
+					seen[a.ActionType] = true
+					var n float64
+					_ = json.Unmarshal([]byte(a.Value), &n)
+					if n == 0 {
+						// value may be a JSON string ("12") rather than number
+						var s string
+						if err := json.Unmarshal([]byte(a.Value), &s); err == nil {
+							_ = json.Unmarshal([]byte(s), &n)
+						}
+					}
+					br.Leads += int64(n)
+				}
+			}
+		}
+
+		// Numeric metrics arrive as JSON strings in Meta insights responses.
+		br.Spend = parseFloatField(row["spend"])
+		br.Impressions = parseIntField(row["impressions"])
+		br.Clicks = parseIntField(row["clicks"])
+
+		// Anything that's not a known metric is treated as a breakdown dim.
+		for k, v := range row {
+			if _, isMetric := metricKeys[k]; isMetric {
+				continue
+			}
+			var s string
+			if err := json.Unmarshal(v, &s); err == nil {
+				br.Dim[k] = s
+			}
+		}
+
+		if br.Leads > 0 {
+			br.CPL = br.Spend / float64(br.Leads)
+		}
+		if br.Impressions > 0 {
+			br.CTR = float64(br.Clicks) / float64(br.Impressions)
+		}
+		out = append(out, br)
+	}
+	return out, nil
+}
+
+// parseFloatField parses a JSON value that may be either a string ("12.34") or
+// a number (12.34) — Meta's insights API uses strings for all numeric metrics.
+func parseFloatField(raw json.RawMessage) float64 {
+	if len(raw) == 0 {
+		return 0
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		var f float64
+		_ = json.Unmarshal([]byte(s), &f)
+		return f
+	}
+	var f float64
+	_ = json.Unmarshal(raw, &f)
+	return f
+}
+
+func parseIntField(raw json.RawMessage) int64 {
+	return int64(parseFloatField(raw))
 }
 
 // ─── Write operations ─────────────────────────────────────────────────────────

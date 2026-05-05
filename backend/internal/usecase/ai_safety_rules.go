@@ -12,25 +12,41 @@ import (
 
 // Safety rule keys
 const (
-	RulePauseCPLRatio     = "pause_cpl_ratio"
-	RuleMinSpendToPause   = "min_spend_to_pause"
-	RuleMinAgeHours       = "min_age_hours"
-	RuleMaxPausePctPerDay = "max_pause_pct_per_day"
-	RuleAlertCPLRatio     = "alert_cpl_ratio"
-	RuleAlertCTRMin       = "alert_ctr_min"
-	RuleAlertFreqMax      = "alert_freq_max"
+	RulePauseCPLRatio          = "pause_cpl_ratio"
+	RuleMinSpendToPause        = "min_spend_to_pause"
+	RuleMinAgeHours            = "min_age_hours"
+	RuleMinConversionsToDecide = "min_conversions_to_decide"
+	RuleRespectLearningPhase   = "respect_learning_phase"
+	RuleMaxPausePctPerDay      = "max_pause_pct_per_day"
+	RuleAlertCPLRatio          = "alert_cpl_ratio"
+	RuleAlertCTRMin            = "alert_ctr_min"
+	RuleAlertFreqMax           = "alert_freq_max"
+	RuleScaleCPLRatio          = "scale_cpl_ratio"
+	RuleScaleMinCTR            = "scale_min_ctr"
+	RuleScaleMaxFreq           = "scale_max_freq"
+	RuleScaleFactor            = "scale_factor"
 )
 
 // DefaultSafetyRules holds the hardcoded baseline thresholds. Per-user overrides
 // from the ai_safety_rules table win when present.
+//
+// Maturity guardrail: nothing fires for campaigns younger than 7 days OR with
+// fewer than 50 conversions in the last 7 days (Meta's learning-phase exit
+// threshold). This avoids acting on noise.
 var DefaultSafetyRules = map[string]float64{
-	RulePauseCPLRatio:     3.0,
-	RuleMinSpendToPause:   30.0,
-	RuleMinAgeHours:       24.0,
-	RuleMaxPausePctPerDay: 0.30,
-	RuleAlertCPLRatio:     1.5,
-	RuleAlertCTRMin:       0.01,
-	RuleAlertFreqMax:      3.5,
+	RulePauseCPLRatio:          3.0,
+	RuleMinSpendToPause:        30.0,
+	RuleMinAgeHours:            168.0, // 7 dias — campanha precisa estar madura
+	RuleMinConversionsToDecide: 50.0,  // Meta exige ~50 eventos/7d pra sair do learning
+	RuleRespectLearningPhase:   1.0,   // 1 = on, 0 = off
+	RuleMaxPausePctPerDay:      0.30,
+	RuleAlertCPLRatio:          1.5,
+	RuleAlertCTRMin:            0.01,
+	RuleAlertFreqMax:           3.5,
+	RuleScaleCPLRatio:          0.6, // CPL ≤ 0.6× média = winner
+	RuleScaleMinCTR:            0.025,
+	RuleScaleMaxFreq:           2.5,
+	RuleScaleFactor:            1.2, // sugere +20% de verba
 }
 
 // EffectiveRules merges defaults with per-user overrides.
@@ -75,22 +91,45 @@ func (r *EffectiveRules) All() map[string]float64 {
 // AdEvaluation is the input for EvaluateAd. We pass the data from the DB
 // instead of fetching it inside, so the caller can batch / cache.
 type AdEvaluation struct {
-	Ad             *domain.Ad
-	Campaign       *domain.Campaign
-	AccountMetaID  string
-	UserID         string
-	AdSpend7d      float64
-	AdLeads7d      int64
-	AdCTR7d        float64
-	AdFreq7d       float64
-	AccountAvgCPL  float64
-	AdAgeHours     float64
+	Ad                  *domain.Ad
+	Campaign            *domain.Campaign
+	AdSetMetaID         string  // for scale_budget target
+	AccountMetaID       string
+	UserID              string
+	AdSpend7d           float64
+	AdLeads7d           int64
+	AdCTR7d             float64
+	AdFreq7d            float64
+	AdSetDailyBudget    float64 // BRL — used to compute proposed scale-up
+	AccountAvgCPL       float64
+	AdAgeHours          float64 // age of the ad itself
+	CampaignAgeHours    float64 // age of the parent campaign
+	CampaignLeads7d     int64   // proxy for "out of learning phase"
 }
 
 // EvaluateAd applies the deterministic safety rules to one ad. Returns nil
 // when the ad does not warrant any action. The returned AIAction is fully
 // populated except for ID/CreatedAt — caller persists via the repository.
+//
+// Maturity gate: never fire on a campaign that is younger than min_age_hours
+// (default 7 days) OR still in Meta's learning phase (proxy: campaign accumulated
+// fewer than min_conversions_to_decide events in the last 7d).
 func EvaluateAd(eval *AdEvaluation, rules *EffectiveRules) *domain.AIAction {
+	minAge := rules.Get(RuleMinAgeHours)
+	minConv := rules.Get(RuleMinConversionsToDecide)
+	respectLearning := rules.Get(RuleRespectLearningPhase) >= 0.5
+
+	campaignAge := eval.CampaignAgeHours
+	if campaignAge == 0 {
+		campaignAge = eval.AdAgeHours
+	}
+	if campaignAge < minAge {
+		return nil // ainda em fase inicial — não interferir
+	}
+	if respectLearning && eval.CampaignLeads7d > 0 && float64(eval.CampaignLeads7d) < minConv {
+		return nil // ainda em aprendizagem — Meta exige ~50 eventos/7d
+	}
+
 	// No leads metric => no signal => skip.
 	if eval.AdLeads7d <= 0 || eval.AccountAvgCPL <= 0 {
 		// Still allow CTR/freq alerts even without lead data.
@@ -99,10 +138,14 @@ func EvaluateAd(eval *AdEvaluation, rules *EffectiveRules) *domain.AIAction {
 
 	cpl := eval.AdSpend7d / float64(eval.AdLeads7d)
 
+	// Winner: CPL muito abaixo da média + CTR alto + freq sob controle => sugere escalar verba.
+	if scale := evaluateScaleUp(eval, rules, cpl); scale != nil {
+		return scale
+	}
+
 	// Hard pause: too expensive AND minimum spend AND minimum age.
 	pauseRatio := rules.Get(RulePauseCPLRatio)
 	minSpend := rules.Get(RuleMinSpendToPause)
-	minAge := rules.Get(RuleMinAgeHours)
 
 	if cpl >= pauseRatio*eval.AccountAvgCPL &&
 		eval.AdSpend7d >= minSpend &&
@@ -153,6 +196,54 @@ func EvaluateAd(eval *AdEvaluation, rules *EffectiveRules) *domain.AIAction {
 		return alert
 	}
 	return nil
+}
+
+// evaluateScaleUp proposes a budget increase for clear winners.
+// Conditions: CPL <= scale_cpl_ratio * account avg, CTR >= scale_min_ctr,
+// freq <= scale_max_freq, has an adset with a daily budget set.
+func evaluateScaleUp(eval *AdEvaluation, rules *EffectiveRules, cpl float64) *domain.AIAction {
+	if eval.AdSetMetaID == "" || eval.AdSetDailyBudget <= 0 {
+		return nil
+	}
+	scaleRatio := rules.Get(RuleScaleCPLRatio)
+	minCTR := rules.Get(RuleScaleMinCTR)
+	maxFreq := rules.Get(RuleScaleMaxFreq)
+	factor := rules.Get(RuleScaleFactor)
+	if factor < 1.05 || factor > 2.0 {
+		factor = 1.2
+	}
+
+	if cpl > scaleRatio*eval.AccountAvgCPL {
+		return nil
+	}
+	if eval.AdCTR7d > 0 && eval.AdCTR7d < minCTR {
+		return nil
+	}
+	if eval.AdFreq7d > maxFreq {
+		return nil
+	}
+
+	from := eval.AdSetDailyBudget
+	to := from * factor
+	change := proposedChange("daily_budget", from, to)
+	snap := metricSnapshot(eval, cpl)
+	return &domain.AIAction{
+		UserID:        eval.UserID,
+		AccountMetaID: eval.AccountMetaID,
+		ActionType:    domain.AIActionTypeScaleBudget,
+		TargetMetaID:  eval.AdSetMetaID,
+		TargetKind:    domain.AIActionTargetAdSet,
+		Reason: fmt.Sprintf(
+			"Vencedor maduro: custo R$ %.2f (%.0f%% da média R$ %.2f), CTR %.2f%%, freq %.2f. Sugiro escalar +%.0f%% (R$ %.2f → R$ %.2f).",
+			cpl, (cpl/eval.AccountAvgCPL)*100, eval.AccountAvgCPL,
+			eval.AdCTR7d*100, eval.AdFreq7d, (factor-1)*100, from, to,
+		),
+		MetricSnapshot: snap,
+		ProposedChange: change,
+		Source:         domain.AIActionSourceRules,
+		Mode:           domain.AIActionModePropose,
+		Status:         domain.AIActionStatusPending,
+	}
 }
 
 func evaluateNonLeadAlerts(eval *AdEvaluation, rules *EffectiveRules) *domain.AIAction {

@@ -332,7 +332,20 @@ func metaCampaignToDomain(mc metaads.MetaCampaign, userID, adAccountID string) *
 			c.LifetimeBudget = &cents
 		}
 	}
+	c.MetaCreatedTime = parseMetaTimePtr(mc.CreatedTime)
+	c.MetaStartTime = parseMetaTimePtr(mc.StartTime)
+	c.MetaStopTime = parseMetaTimePtr(mc.StopTime)
 	return c
+}
+
+// parseMetaTimePtr is a pointer-returning wrapper around parseMetaTime
+// (defined in sync_meta_account.go).
+func parseMetaTimePtr(s string) *time.Time {
+	t := parseMetaTime(s)
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 func metaInsightToDomain(r metaads.MetaInsight, campaignID string) (*domain.CampaignInsight, error) {
@@ -354,12 +367,41 @@ func metaInsightToDomain(r metaads.MetaInsight, campaignID string) (*domain.Camp
 		Frequency:   parseF(r.Frequency),
 	}
 
+	// Conta "leads" alinhado com a coluna "Conversas por mensagem iniciadas"
+	// do Meta Ads Manager. Usamos um único action_type por categoria pra
+	// não duplicar (cada conversa é contada UMA vez).
+	//
+	// Hierarquia de fallback:
+	//   1. messaging_conversation_started_7d (Click-to-WhatsApp / Messages)  ← bate com UI
+	//   2. lead_grouped (Lead Form / agregado)
+	//   3. lead (genérico)
+	var leadCount int64
 	for _, action := range r.Actions {
-		switch action.ActionType {
-		case "lead", "onsite_conversion.lead_grouped",
-			"onsite_conversion.total_messaging_connection":
-			i.Leads += parseInt(action.Value)
-		case "purchase", "offsite_conversion.fb_pixel_purchase":
+		if action.ActionType == "onsite_conversion.messaging_conversation_started_7d" {
+			leadCount = parseInt(action.Value)
+			break
+		}
+	}
+	if leadCount == 0 {
+		for _, action := range r.Actions {
+			if action.ActionType == "onsite_conversion.lead_grouped" {
+				leadCount = parseInt(action.Value)
+				break
+			}
+		}
+	}
+	if leadCount == 0 {
+		for _, action := range r.Actions {
+			if action.ActionType == "lead" {
+				leadCount = parseInt(action.Value)
+				break
+			}
+		}
+	}
+	i.Leads = leadCount
+
+	for _, action := range r.Actions {
+		if action.ActionType == "purchase" || action.ActionType == "offsite_conversion.fb_pixel_purchase" {
 			i.Purchases += parseInt(action.Value)
 		}
 	}
